@@ -1,0 +1,9 @@
+parameters:
+    level: 7
+    paths:
+        - src
+        - database
+    tmpDir: build/phpstan
+    type_coverage:
+        # typed class constants need PHP 8.3; the package supports PHP 8.2 (Laravel 12's minimum)
+        constant_type: 0
