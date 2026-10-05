@@ -424,6 +424,10 @@ composer test    # PHPStan, Pint, 100% type coverage, Pest
 
 See [CHANGELOG](CHANGELOG.md).
 
+## Contributing
+
+Contributions are welcome via pull requests. Please review the [contributing guidelines](.github/CONTRIBUTING.md) first.
+
 ## Security Vulnerabilities
 
 Please review [our security policy](.github/SECURITY.md) on how to report security vulnerabilities.
