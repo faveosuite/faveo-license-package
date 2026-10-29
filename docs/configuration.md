@@ -17,7 +17,7 @@ LICENSE_SALT=long-random-string-never-change-it            # unique per installa
 LICENSE_FILE=storage/app/myproduct/license.json            # = license_file_path in Faveo Invoicing
 ```
 
-- The identity file supplies `server_url`, `product_id`, `product_key`, `public_key` and `mode`. Its format is in the [Server protocol](invoicing-protocol.md#identity-file).
+- The identity file (`KEY=VALUE` or JSON, same key names) supplies `server_url`, `product_id`, `product_key`, `public_key`, `mode` and the installed version. Its keys are in the [Server protocol](invoicing-protocol.md#identity-file).
 - **Explicit values win.** A value set in `.env` or the published config overrides the file. This is useful for pointing a local copy at a test Faveo Invoicing server. Installers must therefore **not** write these keys to `.env`.
 - **The salt** seals the local licence cache. Generate it in your installer (for example `Str::random(40)`), write it to `.env`, and **never change it**. It is never read from the identity file.
 - `php artisan license:status` shows which values came from the identity file.
@@ -26,7 +26,7 @@ LICENSE_FILE=storage/app/myproduct/license.json            # = license_file_path
 
 | Variable | Config key | Notes |
 |---|---|---|
-| `LICENSE_IDENTITY_FILE` | `identity_file` | Path of Faveo Invoicing's identity JSON |
+| `LICENSE_IDENTITY_FILE` | `identity_file` | Path of Faveo Invoicing's identity file (JSON or `KEY=VALUE`) |
 | `LICENSE_FILE` | `license_file` | Path of `license.json`. Required in `FILE` mode |
 | `LICENSE_SALT` | `salt` | 16+ random characters, never change it |
 | `LICENSE_SERVER_URL` | `server_url` | Faveo Invoicing URL. Only needed without an identity file |
@@ -60,7 +60,7 @@ LICENSE_FILE=storage/app/myproduct/license.json
 
 | Key | Default | Meaning |
 |---|---|---|
-| `identity_file` | `null` | Path of Faveo Invoicing's identity JSON |
+| `identity_file` | `null` | Path of Faveo Invoicing's identity file (JSON or `KEY=VALUE`, see [Server protocol](invoicing-protocol.md#identity-file)) |
 | `server_url`, `product_id`, `public_key` | `null` | Faveo Invoicing URL, this product's ID, Faveo Invoicing's Ed25519 public key. Taken from the identity file when `null` |
 | `verify_ssl` | `true` | Verify Faveo Invoicing's TLS certificate. Disable only on hosts with a broken CA bundle |
 | `mode` | `null` → `FILE` | `FILE` (offline) or `DATABASE` (online) |

@@ -13,12 +13,13 @@ return [
     |--------------------------------------------------------------------------
     | Identity file
     |--------------------------------------------------------------------------
-    | Path of the product identity JSON that billing stamps into every download (the product's
-    | `config_file_path` in billing — use the same path here). Relative paths are resolved from
-    | base_path(). null = don't read one.
+    | Path of the product identity file that billing stamps into every download: JSON, or KEY=VALUE
+    | lines like faveoconfig.ini (the product's `config_file_path` in billing — use the same path
+    | here). Relative paths are resolved from base_path(). null = don't read one.
     |
-    | It may set server_url, product_id, product_key, public_key and mode. Values set explicitly
-    | below (or in .env) always win; salt and root_url are never read from it.
+    | Keys (same in both formats, any case): SERVER_URL, PRODUCT_ID, PRODUCT_KEY, ED25519_PUBLIC_KEY,
+    | LICENSE_MODE, APP_VERSION. Values set explicitly below (or in .env) always win; salt and
+    | root_url are never read from it.
     */
 
     'identity_file' => env('LICENSE_IDENTITY_FILE'),

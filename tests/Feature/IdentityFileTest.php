@@ -18,14 +18,15 @@ beforeEach(function () {
         'server_url' => 'https://billing.test',
         'product_id' => 5,
         'product_key' => 'KEY-5',
-        'public_key' => 'PUB',
-        'mode' => 'FILE',
+        'ed25519_public_key' => 'PUB',
+        'license_mode' => 'FILE',
+        'apl_salt' => 'must-never-be-read',
         'salt' => 'must-never-be-read',
         'root_url' => 'https://must-never-be-read.test',
     ]));
 });
 
-it('fills unset identity values from the path the application configures', function () {
+it('fills unset identity values from the path the application configures, matching key names in any case', function () {
     $config = identityConfig(['identity_file' => 'storage/app/myproduct/product.json', 'product_id' => null, 'server_url' => null, 'public_key' => null, 'mode' => null, 'salt' => null, 'root_url' => null]);
     IdentityFile::merge($config, $this->root);
 
@@ -38,13 +39,38 @@ it('fills unset identity values from the path the application configures', funct
         ->and($config->get('license-client.identity.state'))->toBe('loaded');
 });
 
+it('reads the KEY=VALUE identity file billing stamps (faveoconfig.ini) with the same key names as JSON', function () {
+    file_put_contents($this->root.'/storage/faveoconfig.ini', implode("\n", [
+        'APL_SALT=must-never-be-read',
+        'PRODUCT_KEY=KEY-8',
+        'APP_NAME=Faveo (Pro) !',
+        'APP_VERSION=v9.4.3',
+        'PRODUCT_ID=8',
+        'LICENSE_MODE=DATABASE',
+        'ED25519_PUBLIC_KEY=PUB=',
+        'SERVER_URL="https://billing.test"',
+        '',
+    ]));
+    $config = identityConfig(['identity_file' => 'storage/faveoconfig.ini', 'product_id' => null, 'server_url' => null, 'public_key' => null, 'mode' => null, 'salt' => null, 'updates' => ['product_key' => null, 'current_version' => null]]);
+    IdentityFile::merge($config, $this->root);
+
+    expect($config->get('license-client.product_id'))->toBe(8)
+        ->and($config->get('license-client.server_url'))->toBe('https://billing.test')
+        ->and($config->get('license-client.updates.product_key'))->toBe('KEY-8')
+        ->and($config->get('license-client.public_key'))->toBe('PUB=')
+        ->and($config->get('license-client.mode'))->toBe('DATABASE')
+        ->and($config->get('license-client.updates.current_version'))->toBe('v9.4.3')
+        ->and($config->get('license-client.salt'))->toBeNull()
+        ->and($config->get('license-client.identity.state'))->toBe('loaded');
+});
+
 it('lets explicit application config win over the file', function () {
     $config = identityConfig(['identity_file' => $this->root.'/storage/app/myproduct/product.json', 'product_id' => 99, 'mode' => 'DATABASE', 'server_url' => null, 'public_key' => null]);
     IdentityFile::merge($config, '/unused');
 
     expect($config->get('license-client.product_id'))->toBe(99)
         ->and($config->get('license-client.mode'))->toBe('DATABASE')
-        ->and($config->get('license-client.identity.used'))->toBe(['server_url', 'product_key', 'public_key']);
+        ->and($config->get('license-client.identity.used'))->toBe(['SERVER_URL', 'PRODUCT_KEY', 'ED25519_PUBLIC_KEY']);
 });
 
 it('reads nothing when the application sets no path, and reports a missing or broken file', function () {
@@ -86,9 +112,9 @@ it('discovers plugins from the identity files billing stamps into them', functio
     mkdir($this->root.'/plugins/Calendar', 0777, true);
     mkdir($this->root.'/plugins/Broken', 0777, true);
     file_put_contents($this->root.'/plugins/Calendar/license-client.json', json_encode([
-        'addon' => 'calendar', 'product_id' => 12, 'product_key' => 'CAL-KEY', 'license_file' => 'plugins/Calendar/license.json', 'version' => 'v3', 'salt' => 'ignored',
+        'ADDON' => 'calendar', 'PRODUCT_ID' => 12, 'PRODUCT_KEY' => 'CAL-KEY', 'LICENSE_FILE' => 'plugins/Calendar/license.json', 'APP_VERSION' => 'v3', 'APL_SALT' => 'ignored',
     ]));
-    file_put_contents($this->root.'/plugins/Broken/license-client.json', '{"addon": "no product id"}');
+    file_put_contents($this->root.'/plugins/Broken/license-client.json', '{"ADDON": "no product id"}');
     $config = identityConfig(['addons_discover' => 'plugins/*/license-client.json', 'addons' => ['calendar' => ['product_key' => 'EXPLICIT']]]);
 
     IdentityFile::discoverAddons($config, $this->root);
@@ -102,8 +128,22 @@ it('discovers plugins from the identity files billing stamps into them', functio
         ->and($config->get('license-client.addons_discovered.invalid'))->toHaveCount(1);
 });
 
+it('discovers plugins from KEY=VALUE identity files too', function () {
+    mkdir($this->root.'/plugins/Calendar', 0777, true);
+    file_put_contents($this->root.'/plugins/Calendar/faveoconfig.ini', "ADDON=calendar\nPRODUCT_ID=12\nPRODUCT_KEY=CAL-KEY\nLICENSE_FILE=plugins/Calendar/license.json\n");
+    $config = identityConfig(['addons_discover' => 'plugins/*/faveoconfig.ini', 'addons' => []]);
+
+    IdentityFile::discoverAddons($config, $this->root);
+
+    expect($config->get('license-client.addons.calendar'))->toBe([
+        'product_id' => 12,
+        'product_key' => 'CAL-KEY',
+        'license_file' => 'plugins/Calendar/license.json',
+    ]);
+});
+
 it('uses the identity file version as the installed version', function () {
-    file_put_contents($this->root.'/storage/app/myproduct/product.json', json_encode(['product_id' => 5, 'version' => 'v9.1.0']));
+    file_put_contents($this->root.'/storage/app/myproduct/product.json', json_encode(['PRODUCT_ID' => 5, 'APP_VERSION' => 'v9.1.0']));
     $config = identityConfig(['identity_file' => 'storage/app/myproduct/product.json', 'product_id' => null, 'updates' => ['product_key' => null, 'current_version' => null]]);
     IdentityFile::merge($config, $this->root);
 

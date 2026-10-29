@@ -4,15 +4,32 @@ What [Faveo Invoicing](https://github.com/faveosuite/faveo-invoicing-community) 
 
 ## Identity file
 
-The JSON Faveo Invoicing writes at the product's `config_file_path`:
+The file Faveo Invoicing writes at the product's `config_file_path`. It can be `KEY=VALUE` lines (like `storage/faveoconfig.ini`) or JSON, and both use the **same key names**. Case doesn't matter, so `PRODUCT_ID` and `product_id` are the same key:
 
-```json
-{"server_url": "https://invoicing.example.com", "product_id": 5, "product_key": "...", "public_key": "base64...", "mode": "FILE"}
+```ini
+SERVER_URL=https://invoicing.example.com
+PRODUCT_ID=5
+PRODUCT_KEY=...
+ED25519_PUBLIC_KEY=base64...
+LICENSE_MODE=FILE
+APP_VERSION=v9.2.0
 ```
 
-- `mode` is `FILE` for File-mode orders.
-- Optional `version`: the version in this download. It's used to refuse downgrades.
-- **Plugin products:** the same file, at the plugin's own `config_file_path` inside its folder, plus `"addon": "calendar"` (the plugin's name) and `"license_file": "<the plugin's license_file_path>"`.
+```json
+{"SERVER_URL": "https://invoicing.example.com", "PRODUCT_ID": 5, "PRODUCT_KEY": "...", "ED25519_PUBLIC_KEY": "base64...", "LICENSE_MODE": "FILE", "APP_VERSION": "v9.2.0"}
+```
+
+| Key | Sets |
+|---|---|
+| `SERVER_URL` | `server_url` |
+| `PRODUCT_ID` | `product_id` |
+| `PRODUCT_KEY` | `updates.product_key` |
+| `ED25519_PUBLIC_KEY` | `public_key` |
+| `LICENSE_MODE` | `mode`: `FILE` for File-mode orders, else `DATABASE` |
+| `APP_VERSION` | `updates.current_version`: the version in this download, used to refuse downgrades (optional) |
+
+- Other keys (`APP_NAME`, `APL_SALT`...) are ignored. `APL_SALT` is never read.
+- **Plugin products:** the same file, at the plugin's own `config_file_path` inside its folder, plus `ADDON=calendar` (the plugin's name) and `LICENSE_FILE=<the plugin's license_file_path>`.
 - **Plugin update files** use the customer's **main** licence code as `license_code`.
 - **Never put the salt in this file.** It would be the same for every customer, and it's readable by anyone who downloads the product.
 

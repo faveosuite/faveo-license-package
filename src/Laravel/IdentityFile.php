@@ -7,26 +7,34 @@ namespace Faveo\LicenseClient\Laravel;
 use Illuminate\Contracts\Config\Repository as Config;
 
 /**
- * Fills product identity config from the JSON billing stamps into each download, at the path the
- * application sets in license-client.identity_file. Only keys the application left null are filled;
- * salt and root_url are never read from it (they belong to the installation, not the product).
+ * Fills product identity config from the file billing stamps into each download, at the path the
+ * application sets in license-client.identity_file. The file is JSON or KEY=VALUE lines (billing's
+ * faveoconfig.ini); both use the same key names, in any case. Only keys the application left null
+ * are filled; salt and root_url are never read from it (they belong to the installation, not the product).
  *
  * The outcome is recorded in license-client.identity for `license:status`.
  */
 final class IdentityFile
 {
-    /** file key => config key */
+    /** file key (billing's faveoconfig.ini names) => config key */
     private const KEYS = [
-        'server_url' => 'server_url',
-        'product_id' => 'product_id',
-        'product_key' => 'updates.product_key',
-        'public_key' => 'public_key',
-        'mode' => 'mode',
-        'version' => 'updates.current_version',
+        'SERVER_URL' => 'server_url',
+        'PRODUCT_ID' => 'product_id',
+        'PRODUCT_KEY' => 'updates.product_key',
+        'ED25519_PUBLIC_KEY' => 'public_key',
+        'LICENSE_MODE' => 'mode',
+        'APP_VERSION' => 'updates.current_version',
     ];
 
-    /** Keys a plugin's identity file may set on its add-on entry. */
-    private const ADDON_KEYS = ['product_id', 'product_key', 'public_key', 'mode', 'license_file', 'version'];
+    /** file key => add-on entry key, for a plugin's identity file (which also names its add-on in ADDON). */
+    private const ADDON_KEYS = [
+        'PRODUCT_ID' => 'product_id',
+        'PRODUCT_KEY' => 'product_key',
+        'ED25519_PUBLIC_KEY' => 'public_key',
+        'LICENSE_MODE' => 'mode',
+        'LICENSE_FILE' => 'license_file',
+        'APP_VERSION' => 'version',
+    ];
 
     public static function merge(Config $config, string $basePath): void
     {
@@ -43,9 +51,9 @@ final class IdentityFile
         }
 
         $path = self::resolve($path, $basePath);
-        $data = is_readable($path) ? json_decode((string) file_get_contents($path), true) : null;
+        $data = self::read($path);
 
-        if (! is_array($data)) {
+        if ($data === null) {
             $config->set('license-client.identity', ['file' => $path, 'state' => is_file($path) ? 'unreadable' : 'missing', 'used' => []]);
 
             return;
@@ -63,6 +71,37 @@ final class IdentityFile
         $config->set('license-client.identity', ['file' => $path, 'state' => 'loaded', 'used' => $used]);
     }
 
+    /**
+     * The identity file with upper-cased keys: a JSON object, or KEY=VALUE lines. null when unreadable
+     * or empty.
+     *
+     * @return array<array-key, mixed>|null
+     */
+    private static function read(string $path): ?array
+    {
+        $contents = is_readable($path) ? (string) @file_get_contents($path) : '';
+        $data = json_decode($contents, true);
+
+        if (! is_array($data)) {
+            // Split on the first "=" only (base64 values end in "="); parse_ini_* chokes on ( ! " in values.
+            $data = [];
+            foreach (preg_split('/\R/', $contents) ?: [] as $line) {
+                $parts = explode('=', $line, 2);
+
+                if (isset($parts[1]) && ($key = trim($parts[0])) !== '') {
+                    $data[$key] = trim(trim($parts[1]), '"\'');
+                }
+            }
+        }
+        $data = array_change_key_case($data, CASE_UPPER);
+
+        if (is_string($data['PRODUCT_ID'] ?? null) && ctype_digit($data['PRODUCT_ID'])) {
+            $data['PRODUCT_ID'] = (int) $data['PRODUCT_ID'];
+        }
+
+        return $data ?: null;
+    }
+
     /** Absolute paths as-is; relative ones from the app root, so the value can match billing's zip path. */
     public static function resolve(string $path, string $basePath): string
     {
@@ -72,8 +111,9 @@ final class IdentityFile
     /**
      * Register plugins from the identity files billing stamps into each plugin's download, found with
      * the glob the application sets in license-client.addons_discover (relative to base_path()).
-     * Each file names its add-on ("addon") and carries product_id, plus optionally product_key,
-     * public_key, mode, license_file and version. Entries in license-client.addons win key by key.
+     * Each file names its add-on (ADDON) and carries PRODUCT_ID, plus optionally PRODUCT_KEY,
+     * ED25519_PUBLIC_KEY, LICENSE_MODE, LICENSE_FILE and APP_VERSION. Entries in license-client.addons
+     * win key by key.
      *
      * The outcome is recorded in license-client.addons_discovered for `license:status`.
      */
@@ -89,19 +129,23 @@ final class IdentityFile
 
         if (is_string($pattern) && $pattern !== '') {
             foreach (glob(self::resolve($pattern, $basePath)) ?: [] as $file) {
-                $data = json_decode((string) @file_get_contents($file), true);
-                $name = is_array($data) ? ($data['addon'] ?? null) : null;
+                $data = self::read($file);
+                $name = $data['ADDON'] ?? null;
 
-                if (! is_array($data) || ! is_string($name) || preg_match('/^[A-Za-z0-9_-]{1,64}$/', $name) !== 1
-                    || ! is_int($data['product_id'] ?? null) || isset($found[$name])) {
+                if ($data === null || ! is_string($name) || preg_match('/^[A-Za-z0-9_-]{1,64}$/', $name) !== 1
+                    || ! is_int($data['PRODUCT_ID'] ?? null) || isset($found[$name])) {
                     $invalid[] = $file;
 
                     continue;
                 }
-                $entry = array_filter(
-                    array_intersect_key($data, array_flip(self::ADDON_KEYS)),
-                    fn (mixed $v): bool => is_int($v) || (is_string($v) && $v !== ''),
-                );
+                $entry = [];
+                foreach (self::ADDON_KEYS as $fileKey => $entryKey) {
+                    $value = $data[$fileKey] ?? null;
+
+                    if (is_int($value) || (is_string($value) && $value !== '')) {
+                        $entry[$entryKey] = $value;
+                    }
+                }
                 $configured = (array) $config->get("license-client.addons.$name", []);
                 $config->set("license-client.addons.$name", $configured + $entry);
                 $found[$name] = $file;
