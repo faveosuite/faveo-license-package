@@ -31,6 +31,10 @@ final class Entitlements
         public readonly ?DateTimeImmutable $issuedAt = null,
         private readonly array $values = [],
         private readonly array $ends = [],
+        public readonly int $version = 0,                        // goes up when the licence's rights change
+        public readonly ?DateTimeImmutable $renewAfter = null,   // ask billing for a fresh record after this
+        public readonly ?DateTimeImmutable $validUntil = null,   // keep working without billing until this
+        public readonly ?string $kid = null,                     // id of the key that signed it
     ) {}
 
     /** Block format this client reads. Billing bumps `v` only for a change older clients can't read. */
@@ -92,19 +96,23 @@ final class Entitlements
             }
         }
 
-        $issuedAt = null;
+        $version = $data['version'] ?? 0;
+        $kid = $data['kid'] ?? null;
 
-        if (isset($data['issued_at'])) {
-            try {
-                $issuedAt = new DateTimeImmutable((string) $data['issued_at']);
-            } catch (Throwable) {
-                return null;
-            }
+        if (! is_int($version) || $version < 0 || ! ($kid === null || is_string($kid))) {
+            return null;
+        }
+
+        try {
+            $at = fn (string $key): ?DateTimeImmutable => isset($data[$key]) ? new DateTimeImmutable((string) $data[$key]) : null;
+            [$issuedAt, $renewAfter, $validUntil] = [$at('issued_at'), $at('renew_after'), $at('valid_until')];
+        } catch (Throwable) {
+            return null;
         }
 
         /** @var array<string, int|null> $limits */
         /** @var array<string, string> $values */
-        return new self(true, array_values(array_unique($features)), $limits, self::dates($expires), $issuedAt, $values, $ends);
+        return new self(true, array_values(array_unique($features)), $limits, self::dates($expires), $issuedAt, $values, $ends, $version, $renewAfter, $validUntil, $kid);
     }
 
     /**
@@ -121,7 +129,7 @@ final class Entitlements
         return self::fromArray($data) ?? self::none();
     }
 
-    /** @return array{present: bool, features: list<string>, limits: array<string, int|null>, values: array<string, string>, ends: array<string, string>, expires: array<string, string>, issued_at: string|null} */
+    /** @return array{present: bool, features: list<string>, limits: array<string, int|null>, values: array<string, string>, ends: array<string, string>, expires: array<string, string>, issued_at: string|null, version: int, renew_after: string|null, valid_until: string|null, kid: string|null} */
     public function toArray(): array
     {
         return [
@@ -132,6 +140,10 @@ final class Entitlements
             'ends' => $this->ends,
             'expires' => $this->expires,
             'issued_at' => $this->issuedAt?->format(DATE_ATOM),
+            'version' => $this->version,
+            'renew_after' => $this->renewAfter?->format(DATE_ATOM),
+            'valid_until' => $this->validUntil?->format(DATE_ATOM),
+            'kid' => $this->kid,
         ];
     }
 
@@ -147,6 +159,7 @@ final class Entitlements
         if (! $this->present) {
             return true;
         }
+
         if (! in_array($feature, $this->features, true)) {
             return false;
         }

@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\Facade;
  * @method static \Faveo\LicenseClient\Status status(string $addon = '')
  * @method static \Faveo\LicenseClient\Status for(string $addon)
  * @method static \Faveo\LicenseClient\Status verify(bool $force = false, string $addon = '')
+ * @method static \Faveo\LicenseClient\Status refresh(string $addon = '')
+ * @method static \Faveo\LicenseClient\Status accept(string $licenseCode, string $rootUrl, string $json, string $signature, string $addon = '')
  * @method static \Faveo\LicenseClient\Status install(string $email, string $licenseCode, string $addon = '', ?string $rootUrl = null)
  * @method static string activationCode(string $licenseCode, string $addon = '', ?string $rootUrl = null)
  * @method static \Faveo\LicenseClient\Status import(string $contents, string $addon = '', ?string $rootUrl = null)

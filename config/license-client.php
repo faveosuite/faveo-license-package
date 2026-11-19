@@ -40,21 +40,25 @@ return [
     'server_url' => env('LICENSE_SERVER_URL'),
     'product_id' => env('LICENSE_PRODUCT_ID'),
     'public_key' => env('LICENSE_PUBLIC_KEY'),
+    'previous_public_keys' => [], // older billing keys still accepted while billing changes its key
     'verify_ssl' => true,
 
     /*
     |--------------------------------------------------------------------------
     | Licence
     |--------------------------------------------------------------------------
-    | mode          'FILE' = offline signed license.json, 'DATABASE' = online check against billing.
-    |               null = from the identity file, else FILE.
+    | mode          'FILE' = offline signed license.json, 'DATABASE' = online check against billing,
+    |               'CLOUD' = hosted copy: billing pushes each record (License::accept()), this side
+    |               never calls billing. null = from the identity file, else FILE.
     | salt          Seals the local cache row. 16+ random chars, unique per install, NEVER change it
     |               afterwards (the cache stops validating until the licence is re-installed).
     | license_file  FILE mode: path of the signed license.json (the product's `license_file_path` in
     |               billing — use the same path here). Relative paths are resolved from base_path().
     | root_url      This app's URL. null = APP_URL. Must match the licensed domain.
-    | days          Days between full checks (1-365); verify() is a cache read in between.
+    | days          Days between full checks (1-365); verify() is a cache read in between. Billing's
+    |               record says when to renew (renew_after) and that wins; this is for older billing.
     | grace_days    DATABASE mode: keep working this many days while billing is unreachable (0 = off).
+    |               Billing's record says how long it holds (valid_until) and that wins.
     |               A definite refusal (expired, suspended...) is never covered by grace.
     | retry_minutes How often to retry billing while in grace or after a refusal.
     | report_version DATABASE mode: report the installed version to billing (null = don't).

@@ -25,7 +25,13 @@ final class License
 
     public const DATABASE = 'DATABASE';
 
+    /** Hosted copy: billing pushes each record (accept()); this side never calls billing. */
+    public const CLOUD = 'CLOUD';
+
     private const DAY = 86400;
+
+    /** refresh() hits billing at most this often; calls in between are normal checks. */
+    private const REFRESH_SECONDS = 60;
 
     private readonly Network $network;
 
@@ -34,6 +40,7 @@ final class License
 
     /**
      * @param  list<string>  $nameservers
+     * @param  list<string>  $previousPublicKeys
      * @param  (Closure(): int)|null  $clock  unix time source (tests)
      */
     public function __construct(
@@ -55,6 +62,7 @@ final class License
         private readonly bool $verifySsl = true,
         private readonly string $rootIp = '',        // optional: pin billing's IP
         private readonly array $nameservers = [],    // optional: pin billing's nameservers
+        private readonly array $previousPublicKeys = [], // base64 keys still accepted while billing changes its key
         ?Network $network = null,
         ?Closure $clock = null,
     ) {
@@ -127,6 +135,10 @@ final class License
             return $this->status(State::Tampered, 'notification_license_corrupted');
         }
 
+        if ($this->mode === self::CLOUD) {
+            return $this->cloudStatus($row);
+        }
+
         /** @var array{root_url: string, client_email: string, license_code: string, checked_at: int, grace_since: int|null, retry_at: int|null, refusal: string|null, entitlements: array<mixed>} $row */
         $now = $this->now();
 
@@ -141,11 +153,69 @@ final class License
             }
         }
 
-        if (! $force && $row['retry_at'] === null && $now - $row['checked_at'] < $this->days * self::DAY) {
+        if (! $force && $row['retry_at'] === null && $now < $this->renewAt($row)) {
             return $this->status(State::Active, 'notification_license_ok', Entitlements::fromCache($row['entitlements']), $row['checked_at'], cached: true);
         }
 
         return $this->mode === self::FILE ? $this->fileCheck($row) : $this->serverCheck($row);
+    }
+
+    /**
+     * Ask billing now (the "Refresh licence" button, or right after a limit is hit), at most once a
+     * minute; calls in between are normal checks. FILE and CLOUD records can't be fetched: a check.
+     */
+    public function refresh(): Status
+    {
+        $row = $this->mode === self::DATABASE && ! $this->configErrors() ? $this->store->get($this->pluginName) : null;
+
+        if ($row === null || ! $this->rowIsValid($row)) {
+            return $this->verify();
+        }
+
+        if (is_int($row['refreshed_at'] ?? null) && $this->now() - $row['refreshed_at'] < self::REFRESH_SECONDS) {
+            return $this->verify();
+        }
+
+        if ($failed = $this->save(['refreshed_at' => $this->now()] + $row)) {
+            return $failed;
+        }
+
+        return $this->verify(force: true);
+    }
+
+    /**
+     * CLOUD mode: store a record billing pushed — the same signed block the online check returns,
+     * signed over "product_id|license_code|root_url|<json>". A record older than the one stored is
+     * ignored (events can arrive out of order), so the newest always wins.
+     */
+    public function accept(string $licenseCode, string $rootUrl, string $json, string $signature): Status
+    {
+        if ($errors = $this->configErrors()) {
+            return $this->misconfigured($errors);
+        }
+
+        $rootUrl = rtrim($rootUrl, '/');
+        $decoded = json_decode($json, true);
+        $entitlements = is_array($decoded) && $this->signedBy($this->productId.'|'.$licenseCode.'|'.$rootUrl.'|'.$json, $signature, self::kidOf($decoded))
+            ? Entitlements::fromArray($decoded)
+            : null;
+
+        if ($entitlements === null || ! self::isValidUrl($rootUrl)) {
+            return $this->status(State::Invalid, 'notification_invalid_response');
+        }
+
+        $row = $this->store->get($this->pluginName);
+        $row = $row !== null && $this->rowIsValid($row) ? $row : null;
+
+        if ($row !== null && $this->olderThanCached($entitlements, $row)) {
+            return $this->verify();
+        }
+
+        return $this->saveActive([
+            'root_url' => $rootUrl,
+            'client_email' => (string) ($row['client_email'] ?? ''),
+            'license_code' => $licenseCode,
+        ], $entitlements, []);
     }
 
     /**
@@ -255,7 +325,8 @@ final class License
             $errors[] = 'config_invalid_salt';
         }
 
-        if (! self::isValidUrl($this->serverUrl())) {
+        // A hosted (CLOUD) copy never calls billing, so it needs no address for it.
+        if ($this->mode !== self::CLOUD && ! self::isValidUrl($this->serverUrl())) {
             $errors[] = 'config_invalid_server_url';
         }
 
@@ -271,7 +342,7 @@ final class License
             $errors[] = 'config_invalid_grace';
         }
 
-        if ($this->mode !== self::FILE && $this->mode !== self::DATABASE) {
+        if (! in_array($this->mode, [self::FILE, self::DATABASE, self::CLOUD], true)) {
             $errors[] = 'config_invalid_mode';
         }
 
@@ -279,7 +350,7 @@ final class License
             $errors[] = 'config_missing_license_file';
         }
 
-        if (($this->mode === self::FILE || $this->publicKey) && ! self::validKey($this->publicKey)) {
+        if (($this->mode !== self::DATABASE || $this->publicKey) && ! self::validKey($this->publicKey)) {
             $errors[] = 'config_invalid_public_key';
         }
 
@@ -314,12 +385,18 @@ final class License
             return $license;
         }
 
+        $entitlements = $this->fileEntitlements($license);
+
+        if ($row !== null && $this->rowIsValid($row) && $this->olderThanCached($entitlements, $row)) {
+            return $this->status(State::Invalid, 'notification_license_outdated');
+        }
+
         // The signed file is authoritative; the cached licence code follows it.
         return $this->saveActive([
             'root_url' => (string) ($row['root_url'] ?? $url),
             'client_email' => (string) ($row['client_email'] ?? ''),
             'license_code' => (string) $license['license_code'],
-        ], $this->fileEntitlements($license), $license);
+        ], $entitlements, $license);
     }
 
     /** @param  array{root_url: string, client_email: string, license_code: string, checked_at: int, grace_since: int|null, retry_at: int|null, refusal: string|null, entitlements: array<mixed>}  $row */
@@ -327,6 +404,10 @@ final class License
     {
         $reply = $this->callServer('/api/licenseVerify', $row);
         $entitlements = $reply['reached'] ? $this->serverEntitlements($reply['data'], $row) : null;
+
+        if ($entitlements !== null && $this->olderThanCached($entitlements, $row)) {
+            $entitlements = null; // an older record than the one we hold: not trusted
+        }
         $state = self::stateFor($reply['case']);
 
         if (! $reply['reached'] || ($state === State::Active && $entitlements === null)) {
@@ -364,9 +445,11 @@ final class License
     /** @param  array{checked_at: int, grace_since: int|null, entitlements: array<mixed>}  $row */
     private function graceStatus(array $row, bool $cached): Status
     {
-        $endsAt = ($row['grace_since'] ?? $this->now()) + $this->graceDays * self::DAY;
+        // Billing says how long its record holds (valid_until); older billing doesn't, so grace_days.
+        $validUntil = Entitlements::fromCache($row['entitlements'])->validUntil?->getTimestamp();
+        $endsAt = $validUntil ?? ($row['grace_since'] ?? $this->now()) + $this->graceDays * self::DAY;
 
-        if ($this->graceDays > 0 && $this->now() < $endsAt) {
+        if (($validUntil !== null || $this->graceDays > 0) && $this->now() < $endsAt) {
             return $this->status(State::Grace, 'notification_license_grace', Entitlements::fromCache($row['entitlements']), $row['checked_at'], $endsAt, cached: $cached);
         }
 
@@ -418,7 +501,9 @@ final class License
         }
 
         // The signed message is the pre-serialized JSON string: verify it byte for byte.
-        if (! $this->signedBy($file['license'], $file['signature']) || ! is_array($license = json_decode($file['license'], true))) {
+        $license = json_decode($file['license'], true);
+
+        if (! is_array($license) || ! $this->signedBy($file['license'], $file['signature'], self::kidOf(is_array($license['entitlements'] ?? null) ? $license['entitlements'] : []))) {
             return $corrupted;
         }
 
@@ -507,9 +592,10 @@ final class License
         $json = $data['entitlements'];
         $sig = $data['entitlements_signature'] ?? null;
 
-        if (! is_string($json) || ! is_string($sig)
-            || ! $this->signedBy($this->productId.'|'.$row['license_code'].'|'.$row['root_url'].'|'.$json, $sig)
-            || ! is_array($decoded = json_decode($json, true))
+        $decoded = is_string($json) ? json_decode($json, true) : null;
+
+        if (! is_string($json) || ! is_string($sig) || ! is_array($decoded)
+            || ! $this->signedBy($this->productId.'|'.$row['license_code'].'|'.$row['root_url'].'|'.$json, $sig, self::kidOf($decoded))
             || ! ($entitlements = Entitlements::fromArray($decoded))) {
             return null;
         }
@@ -563,15 +649,83 @@ final class License
         return $ips === '' ? '' : hash('sha256', $prefixIps ? $ips.$data : $data.$ips);
     }
 
-    private function signedBy(string $message, string $signatureB64): bool
+    /**
+     * Signed by billing's key, or a previous one still accepted. A record naming its key (kid) is
+     * checked against that key only; a kid matching none of ours fails.
+     */
+    private function signedBy(string $message, string $signatureB64, ?string $kid = null): bool
     {
         $sig = base64_decode($signatureB64, true);
-        $key = base64_decode((string) $this->publicKey, true);
 
-        return is_string($sig) && is_string($key)
-            && strlen($key) === SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES
-            && strlen($sig) === SODIUM_CRYPTO_SIGN_BYTES
-            && sodium_crypto_sign_verify_detached($sig, $message, $key);
+        if (! is_string($sig) || strlen($sig) !== SODIUM_CRYPTO_SIGN_BYTES) {
+            return false;
+        }
+
+        foreach ([$this->publicKey, ...$this->previousPublicKeys] as $keyB64) {
+            $key = base64_decode((string) $keyB64, true);
+
+            if (is_string($key) && strlen($key) === SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES
+                && ($kid === null || hash_equals(self::keyId((string) $keyB64), $kid))
+                && sodium_crypto_sign_verify_detached($sig, $message, $key)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Billing's key id: the first 16 hex characters of sha256(base64 public key). */
+    private static function keyId(string $keyB64): string
+    {
+        return substr(hash('sha256', $keyB64), 0, 16);
+    }
+
+    /** @param  array<mixed>  $record */
+    private static function kidOf(array $record): ?string
+    {
+        return is_string($record['kid'] ?? null) ? $record['kid'] : null;
+    }
+
+    /**
+     * When the cached record should be renewed: billing's renew_after, else checked_at + days.
+     *
+     * @param  array{checked_at: int, entitlements: array<mixed>}  $row
+     */
+    private function renewAt(array $row): int
+    {
+        return Entitlements::fromCache($row['entitlements'])->renewAfter?->getTimestamp()
+            ?? $row['checked_at'] + $this->days * self::DAY;
+    }
+
+    /**
+     * A record older than the cached one (a replayed or late answer) is never taken.
+     *
+     * @param  array<string, mixed>  $row
+     */
+    private function olderThanCached(Entitlements $new, array $row): bool
+    {
+        return is_array($row['entitlements'] ?? null) && $new->version < Entitlements::fromCache($row['entitlements'])->version;
+    }
+
+    /**
+     * CLOUD: the stored record is the licence; billing replaces it when anything changes.
+     *
+     * @param  array<string, mixed>  $row
+     */
+    private function cloudStatus(array $row): Status
+    {
+        $checkedAt = is_int($row['checked_at'] ?? null) ? $row['checked_at'] : null;
+
+        if (is_string($row['refusal'] ?? null)) {
+            return $this->status(self::stateFor($row['refusal']), $row['refusal'], checkedAt: $checkedAt, cached: true);
+        }
+        $entitlements = Entitlements::fromCache(is_array($row['entitlements'] ?? null) ? $row['entitlements'] : []);
+
+        if ($entitlements->expired('license', $this->today())) {
+            return $this->status(State::Expired, 'notification_license_expired', checkedAt: $checkedAt, cached: true);
+        }
+
+        return $this->status(State::Active, 'notification_license_ok', $entitlements, $checkedAt, cached: true);
     }
 
     /** @return list<string> */
@@ -626,7 +780,7 @@ final class License
     /** @param  array<string, mixed>  $row */
     private function save(array $row): ?Status
     {
-        $keys = ['root_url', 'client_email', 'license_code', 'checked_at', 'grace_since', 'retry_at', 'refusal', 'entitlements'];
+        $keys = ['root_url', 'client_email', 'license_code', 'checked_at', 'grace_since', 'retry_at', 'refusal', 'entitlements', 'refreshed_at'];
         $row = array_intersect_key($row, array_flip($keys));
         $row['mac'] = $this->mac($row);
 
@@ -660,7 +814,7 @@ final class License
                 return false;
             }
         }
-        foreach (['grace_since', 'retry_at'] as $k) {
+        foreach (['grace_since', 'retry_at', 'refreshed_at'] as $k) {
             if (! (($row[$k] ?? null) === null || is_int($row[$k]))) {
                 return false;
             }

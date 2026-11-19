@@ -63,6 +63,24 @@ final class LicenseManager
         return $this->statuses[$addon] = $status;
     }
 
+    /** Ask billing now (Refresh licence button, or after a limit is hit); at most once a minute. */
+    public function refresh(string $addon = ''): Status
+    {
+        $status = $this->license($addon)->refresh();
+        $this->dispatch($addon, $status);
+
+        return $this->statuses[$addon] = $status;
+    }
+
+    /** CLOUD mode: store a record billing pushed (see License::accept()). */
+    public function accept(string $licenseCode, string $rootUrl, string $json, string $signature, string $addon = ''): Status
+    {
+        $status = $this->license($addon)->accept($licenseCode, $rootUrl, $json, $signature);
+        $this->dispatch($addon, $status);
+
+        return $this->statuses[$addon] = $status;
+    }
+
     public function install(string $email, string $licenseCode, string $addon = '', ?string $rootUrl = null): Status
     {
         $status = $this->license($addon)->install($email, $licenseCode, $rootUrl);
@@ -227,6 +245,7 @@ final class LicenseManager
             verifySsl: (bool) $get('verify_ssl', true),
             rootIp: (string) $get('root_ip', ''),
             nameservers: array_values((array) $get('nameservers', [])),
+            previousPublicKeys: array_values(array_filter((array) $get('previous_public_keys', []), is_string(...))),
             network: $this->network(),
         );
     }

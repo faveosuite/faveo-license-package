@@ -25,6 +25,29 @@ License::message($status);                // translated text for the customer
 
 The status is checked at most once per request. Every method takes an add-on name as its last argument, or use `License::for('addon')` for the `Status` of a plugin.
 
+## Renewal, refresh and outages
+
+Billing's signed answer says when to ask again (`renew_after`, about a day) and how long it holds without billing (`valid_until`, about 30 days). Between checks every call is a cache read; while billing can't be reached the app keeps working until `valid_until`. Older billing doesn't send these, so `days` and `grace_days` apply instead.
+
+```php
+License::refresh();   // ask billing now — the "Refresh licence" button, or right after a limit is hit
+```
+
+`refresh()` reaches billing at most once a minute; calls in between are normal checks. A record older than the one already held (`version`) is never taken, so a replayed answer can't undo a change.
+
+When billing changes its signing key, list the old one in `previous_public_keys` until every install has the new `public_key`. Each record names its key (`kid`), so only that key is tried.
+
+## Hosted (CLOUD) mode
+
+With `mode` set to `CLOUD`, the app never calls billing: billing pushes each licence record and you store it.
+
+```php
+// in the endpoint that receives billing's push
+$status = License::accept($licenseCode, $rootUrl, $entitlementsJson, $entitlementsSignature);
+```
+
+The record is the same signed block the online check returns (signed over `product_id|license_code|root_url|json`). A record older than the stored one is ignored, so events may arrive in any order. `License::status()` then reads only the stored record.
+
 ## Routes and views
 
 ```php
