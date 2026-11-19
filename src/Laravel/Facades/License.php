@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static bool ok(string $addon = '')
  * @method static bool allows(string $feature, string $addon = '')
  * @method static int|null limit(string $name, string $addon = '')
+ * @method static string|null value(string $name, string $addon = '')
  * @method static bool withinLimit(string $name, int $count, string $addon = '')
  * @method static \DateTimeImmutable|null expiresAt(string $name, string $addon = '')
  * @method static string message(\Faveo\LicenseClient\Status $status)

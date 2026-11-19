@@ -8,7 +8,7 @@ use DateTimeImmutable;
 use Throwable;
 
 /**
- * Features, limits and expiry dates granted by a licence.
+ * Features, limits, chosen values and expiry dates granted by a licence.
  *
  * When billing sends an `entitlements` block access is deny-by-default: unknown features are off
  * and unknown limits are 0. When it doesn't (billing not upgraded yet) everything is allowed and
@@ -20,6 +20,8 @@ final class Entitlements
      * @param  list<string>  $features
      * @param  array<string, int|null>  $limits  null = unlimited
      * @param  array<string, string>  $expires  name => Y-m-d
+     * @param  array<string, string>  $values  select / text choices
+     * @param  array<string, string>  $ends  feature => Y-m-d it stops on (a dated trial)
      */
     private function __construct(
         private readonly bool $present,
@@ -27,7 +29,12 @@ final class Entitlements
         private readonly array $limits,
         private readonly array $expires,
         public readonly ?DateTimeImmutable $issuedAt = null,
+        private readonly array $values = [],
+        private readonly array $ends = [],
     ) {}
+
+    /** Block format this client reads. Billing bumps `v` only for a change older clients can't read. */
+    public const int VERSION = 1;
 
     /**
      * Billing sent no entitlements: allow everything, keep whatever expiry dates are known.
@@ -46,8 +53,9 @@ final class Entitlements
     }
 
     /**
-     * Build from billing's block: {features: [...], limits: {...}, expires: {...}, issued_at: "..."}.
-     * Returns null when the shape is wrong, so a malformed block is never read as "unrestricted".
+     * Build from billing's block: {v, features: [...], limits: {...}, values: {...}, ends: {...},
+     * expires: {...}, issued_at: "..."}. Returns null when the shape is wrong or the version is newer
+     * than this client knows, so such a block is never read as "unrestricted".
      *
      * @param  array<mixed>  $data
      */
@@ -56,9 +64,22 @@ final class Entitlements
         $features = $data['features'] ?? [];
         $limits = $data['limits'] ?? [];
         $expires = $data['expires'] ?? [];
+        $values = $data['values'] ?? [];
+        $ends = $data['ends'] ?? [];
 
-        if (! is_array($features) || ! is_array($limits) || ! is_array($expires)) {
+        if (($data['v'] ?? self::VERSION) !== self::VERSION
+            || ! is_array($features) || ! is_array($limits) || ! is_array($expires) || ! is_array($values) || ! is_array($ends)) {
             return null;
+        }
+        foreach ($values as $name => $value) {
+            if (! is_string($name) || ! is_string($value)) {
+                return null;
+            }
+        }
+        foreach ($ends as $name => $date) {
+            if (! is_string($name) || ! is_string($date) || preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) !== 1) {
+                return null;
+            }
         }
         foreach ($features as $feature) {
             if (! is_string($feature)) {
@@ -82,7 +103,8 @@ final class Entitlements
         }
 
         /** @var array<string, int|null> $limits */
-        return new self(true, array_values(array_unique($features)), $limits, self::dates($expires), $issuedAt);
+        /** @var array<string, string> $values */
+        return new self(true, array_values(array_unique($features)), $limits, self::dates($expires), $issuedAt, $values, $ends);
     }
 
     /**
@@ -99,13 +121,15 @@ final class Entitlements
         return self::fromArray($data) ?? self::none();
     }
 
-    /** @return array{present: bool, features: list<string>, limits: array<string, int|null>, expires: array<string, string>, issued_at: string|null} */
+    /** @return array{present: bool, features: list<string>, limits: array<string, int|null>, values: array<string, string>, ends: array<string, string>, expires: array<string, string>, issued_at: string|null} */
     public function toArray(): array
     {
         return [
             'present' => $this->present,
             'features' => $this->features,
             'limits' => $this->limits,
+            'values' => $this->values,
+            'ends' => $this->ends,
             'expires' => $this->expires,
             'issued_at' => $this->issuedAt?->format(DATE_ATOM),
         ];
@@ -117,9 +141,30 @@ final class Entitlements
         return $this->present;
     }
 
-    public function allows(string $feature): bool
+    /** Granted, and not past its own end date (a dated trial stops on its own, even offline). */
+    public function allows(string $feature, ?DateTimeImmutable $now = null): bool
     {
-        return ! $this->present || in_array($feature, $this->features, true);
+        if (! $this->present) {
+            return true;
+        }
+        if (! in_array($feature, $this->features, true)) {
+            return false;
+        }
+
+        return ! isset($this->ends[$feature])
+            || new DateTimeImmutable($this->ends[$feature].' 23:59:59') >= ($now ?? new DateTimeImmutable);
+    }
+
+    /** A select / text choice, e.g. value('data_region') → "eu". null = not set (use your safest default). */
+    public function value(string $name): ?string
+    {
+        return $this->values[$name] ?? null;
+    }
+
+    /** End date of a dated feature, or null when it lasts as long as the licence. */
+    public function endsAt(string $feature): ?DateTimeImmutable
+    {
+        return isset($this->ends[$feature]) ? new DateTimeImmutable($this->ends[$feature].' 23:59:59') : null;
     }
 
     /** @return list<string> */

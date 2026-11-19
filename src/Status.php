@@ -56,6 +56,12 @@ final class Status
         return $this->ok() ? $this->entitlements->limit($name) : 0;
     }
 
+    /** A select / text choice; null when the licence is not valid or the value isn't set. */
+    public function value(string $name): ?string
+    {
+        return $this->ok() ? $this->entitlements->value($name) : null;
+    }
+
     public function withinLimit(string $name, int $count): bool
     {
         $limit = $this->limit($name);

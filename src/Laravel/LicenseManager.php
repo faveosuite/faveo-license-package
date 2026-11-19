@@ -156,6 +156,11 @@ final class LicenseManager
         return $this->status($addon)->limit($name);
     }
 
+    public function value(string $name, string $addon = ''): ?string
+    {
+        return $this->status($addon)->value($name);
+    }
+
     public function withinLimit(string $name, int $count, string $addon = ''): bool
     {
         return $this->status($addon)->withinLimit($name, $count);

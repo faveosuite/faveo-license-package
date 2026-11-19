@@ -14,6 +14,7 @@ use Faveo\LicenseClient\Laravel\Facades\License;
 License::ok();                            // licence valid (active, or in grace)
 License::allows('sla');                   // feature granted
 License::limit('agents');                 // ?int, null = unlimited
+License::value('data_region');            // ?string, a select / text choice (null = not set)
 License::withinLimit('agents', $count);   // $count <= limit
 License::expiresAt('updates');            // ?DateTimeImmutable
 License::for('calendar')->allows('sync'); // add-on licence
@@ -83,7 +84,7 @@ if (! License::withinLimit('agents', Agent::count() + 1)) {
 | `state` | A `Faveo\LicenseClient\State` enum, see below |
 | `case` | Stable code such as `notification_invalid_domain`. It is the translation key for the message |
 | `needsActivation()` | A new licence file is needed (not activated, or the server or domain changed) |
-| `allows($feature)`, `limit($name)`, `withinLimit($name, $n)`, `expiresAt($name)` | Entitlement checks. When the licence isn't `ok()`, features are denied and limits are 0 |
+| `allows($feature)`, `limit($name)`, `value($name)`, `withinLimit($name, $n)`, `expiresAt($name)` | Entitlement checks. When the licence isn't `ok()`, features are denied, limits are 0 and values are null. A feature with an end date (a trial) is denied after that day, even offline |
 | `entitlements` | The `Entitlements` object, with `present()`, `features()` and `limits()` |
 | `checkedAt`, `graceEndsAt`, `graceStarted`, `cached` | When the last full check ran, when grace ends, whether this check started grace, and whether this answer came from the cache |
 | `errors` | Config or input codes (`config_*`, `input_*`) when the state is `Misconfigured` or the input was refused |
